@@ -507,7 +507,6 @@ function filter-select() {
         ret=1
 
     elif (( ${#displays} == 0 )) && (( keep_query_text )); then
-        echo "in keep_query_text" >> /tmp/zaw.log
         # Reply with contents of buffer
         reply=("${bounds}" "${LBUFFER}")
         reply_marked=()
