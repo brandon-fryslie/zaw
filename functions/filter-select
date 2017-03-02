@@ -140,6 +140,7 @@ function filter-select() {
     integer i bottom_lines cursor_line=1 display_head_line=1 cand_num disp_num ii num_desc
     integer offset display_bottom_line selected_num rev=0 ret=0 enum=0
     integer mark_idx markable=0 is_marked
+    integer keep_query_text=0
 
     local hi_selected hi_matched hi_marked hi_title hi_error
     zstyle -s ':filter-select:highlight' selected hi_selected || hi_selected='standout'
@@ -160,7 +161,7 @@ function filter-select() {
     descriptions=()
     exit_wigdets=(accept-line accept-search send-break)
 
-    while getopts 't:A:d:D:nrme:s:i' opt; do
+    while getopts 't:A:d:D:nrme:s:k:i' opt; do
         case "${opt}" in
             t)
                 title="${OPTARG}"
@@ -197,6 +198,10 @@ function filter-select() {
                 ;;
             s)
                 initbuffer="${OPTARG}"
+                ;;
+            k)
+                # If there are no matches, reply with the query text
+                keep_query_text=1
                 ;;
             i)
                 # do nothing. only keybinds are initialized
@@ -500,6 +505,13 @@ function filter-select() {
         reply=()
         reply_marked=()
         ret=1
+
+    elif (( ${#displays} == 0 )) && (( keep_query_text )); then
+        echo "in keep_query_text" >> /tmp/zaw.log
+        # Reply with contents of buffer
+        reply=("${bounds}" "${LBUFFER}")
+        reply_marked=()
+        ret=0
 
     elif (( ${#displays} == 0 )); then
         # no candidate matches pattern (no candidate selected)
