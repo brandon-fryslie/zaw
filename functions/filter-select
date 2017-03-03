@@ -131,12 +131,13 @@ function filter-select() {
     local key cand lines selected cand_disp buffer_pre_zle last_buffer initbuffer=''
     local opt pattern msg unused title='' exit_pattern nl=$'\n'
     local selected_index mark_idx_disp hi start end spec
-    local desc desc_num desc_disp bounds
+    local desc desc_num desc_disp bounds candidate_fn
 
     local -a external_keymaps
     local -a displays matched_desc_keys match mbegin mend outs exit_wigdets
     local -a init_region_highlight marked_lines
     local -A candidates descriptions matched_descs
+    typeset -ga filter_select_candidates filter_select_descriptions
 
     integer i bottom_lines cursor_line=1 display_head_line=1 cand_num disp_num ii num_desc
     integer offset display_bottom_line selected_num rev=0 ret=0 enum=0
@@ -162,7 +163,47 @@ function filter-select() {
     descriptions=()
     exit_wigdets=(accept-line accept-search send-break)
 
-    while getopts 't:A:d:D:nrme:s:M:ki' opt; do
+    # Sets the global $candidates variable from a named array
+    _filter-select-set-candidates() {
+        # echo "filter-select set-candidates arrayname: ${1} array contents: "${(@P)${1}}"  ">> /tmp/zaw.log
+        integer i=0
+        for cand in "${(@P)${1}}"; do
+            # echo "filter-select set-candidates setting $cand" >> /tmp/zaw.log
+            (( i++ ))
+            candidates+=( $i "${cand}" )
+        done
+
+        if (( ${#descriptions} == 0 )); then
+            # copy candidates
+            descriptions=("${(@kv)candidates}")
+            # add number
+            if (( enum )); then
+                num_desc="${#descriptions}"
+                for i in {1.."$num_desc"}; do
+                    if (( rev )); then
+                        ii="$(($num_desc-$i+1))"
+                    else
+                        ii="$i"
+                    fi
+                    descriptions[$i]="${(r.5.)ii} ${descriptions[$i]}"
+                done
+            fi
+        fi
+    }
+
+    # Sets the global $descriptions variable from a named array
+    _filter-select-set-descriptions() {
+        # copy input array
+        # echo "setting descriptions from array $1" >> /tmp/zaw.log
+        integer i=0
+        for desc in "${(@P)${1}}"; do
+            # echo "setting a description $i ${desc}" >> /tmp/zaw.log
+            (( i++ ))
+            descriptions+=( $i "${desc}" )
+        done
+    }
+
+    while getopts 't:A:c:d:D:nrme:s:M:f:ki' opt; do
         case "${opt}" in
             t)
                 title="${OPTARG}"
@@ -172,12 +213,10 @@ function filter-select() {
                 candidates=("${(@kvP)${OPTARG}}")
                 ;;
             d)
-                # copy input array
-                integer i=0
-                for desc in "${(@P)${OPTARG}}"; do
-                    (( i++ ))
-                    descriptions+=( $i "${desc}" )
-                done
+                _filter-select-set-candidates "${OPTARG}"
+                ;;
+            d)
+                _filter-select-set-descriptions "${OPTARG}"
                 ;;
             D)
                 # copy input assc array
@@ -209,6 +248,10 @@ function filter-select() {
                 # If there are no matches, reply with the query text
                 keep_query_text=1
                 ;;
+            f)
+                # Function to regenerate candidates
+                candidate_fn="${OPTARG}"
+                ;;
             i)
                 # do nothing. only keybinds are initialized
                 return
@@ -218,28 +261,12 @@ function filter-select() {
     if (( OPTIND > 1 )); then
         shift $(( OPTIND - 1 ))
     fi
-    integer i=0
-    for cand in "$@"; do
-        (( i++ ))
-        candidates+=( $i "${cand}" )
-    done
 
-    if (( ${#descriptions} == 0 )); then
-        # copy candidates
-        descriptions=("${(@kv)candidates}")
-        # add number
-        if (( enum )); then
-            num_desc="${#descriptions}"
-            for i in {1.."$num_desc"}; do
-                if (( rev )); then
-                    ii="$(($num_desc-$i+1))"
-                else
-                    ii="$i"
-                fi
-                descriptions[$i]="${(r.5.)ii} ${descriptions[$i]}"
-            done
-        fi
-    fi
+    local -a initial_candidates
+    for c in "$@"; do
+        initial_candidates+="$c"
+    done
+    _filter-select-set-candidates initial_candidates
 
     desc_num="${#descriptions}"
     matched_desc_keys=("${(onk@)descriptions}")
@@ -278,6 +305,7 @@ function filter-select() {
     exit_pattern="(${(j:|:)exit_wigdets})"
 
     while [[ "${bounds}" != ${~exit_pattern} ]]; do
+        # echo "!!!!!!! doing zle widget: ${bounds}" >> /tmp/zaw.log
         case "${bounds}" in
             set-mark-command)
                 if (( markable )); then
@@ -316,14 +344,14 @@ function filter-select() {
                 ;;
 
             self-insert)
-                echo "doing self-insert: ${key}" >> /tmp/zaw.log
+                # echo "doing self-insert: ${key}" >> /tmp/zaw.log
                 LBUFFER="${LBUFFER}${key}"
                 _filter-select-reset
                 ;;
 
             undefined-key)
                 #
-                echo "undefined-key: ${key}" >> /tmp/zaw.log
+                # echo "undefined-key: ${key}" >> /tmp/zaw.log
                 # LBUFFER="${LBUFFER}${key}"
                 _filter-select-reset
                 ;;
@@ -333,7 +361,7 @@ function filter-select() {
                 ;;
 
             *)
-                echo "anything? key: ${key} bounds: ${bounds}" >> /tmp/zaw.log
+                # echo "anything? key: ${key} bounds: ${bounds}" >> /tmp/zaw.log
                 buffer_pre_zle="${BUFFER}"
 
                 zle "${bounds}"
@@ -467,6 +495,8 @@ function filter-select() {
 
                         typeset -g FILTER_SELECT_SELECTED
                         FILTER_SELECT_SELECTED="${selected}"
+                        # echo "SETTING FILTER_SELECT_SELECTED: ${FILTER_SELECT_SELECTED}" >> /tmp/zaw.log
+                        # echo "LOOPING HAVE CANDS: ${candidates}" >> /tmp/zaw.log
 
                         (( selected_num = display_head_line + disp_num - 1 ))
                         selected_index="${i}"
@@ -486,10 +516,17 @@ function filter-select() {
                 if (( ${#candidates} == 0 )); then
                     msg='no candidate'
                 else
-                    msg='pattern not found'
+                    if (( keep_query_text )); then
+                        msg="input: ${BUFFER}"
+                        no_match_highlight=$hi_marked
+                    else
+                        msg='pattern not found'
+                        no_match_highlight=$hi_error
+                    fi
+
                 fi
                 POSTDISPLAY+="${msg}"
-                region_highlight+="${offset} $(( offset + ${#msg} + 1 )) ${hi_error}"
+                region_highlight+="${offset} $(( offset + ${#msg} + 1 )) ${no_match_highlight}"
             fi
 
             POSTDISPLAY+="${(F)displays}"$'\n'"[${selected_num}/${desc_num}]"
@@ -514,7 +551,17 @@ function filter-select() {
                 outs=("${(z)$( bindkey -M $kmap -- "${key}" )}")
                 key_code="${outs[1]}"
                 key_code_widget="${outs[2]}"
-                [[ $? == 0 ]] && [[ $key_code_widget != "undefined-key" ]] && break
+                if [[ $? == 0 ]] && [[ $key_code_widget != "undefined-key" ]]; then
+                    zle $key_code_widget
+                    # reload candidates here
+                    if [[ ! -z $candidate_fn ]]; then
+                        # echo "candidate_fn: $candidate_fn" >> /tmp/zaw.log
+                        eval $candidate_fn
+
+                        _filter-select-set-candidates filter_select_candidates
+                        _filter-select-set-descriptions filter_select_descriptions
+                    fi
+                fi
             done
 
             if [[ -z $key_code_widget ]] || [[ $key_code_widget == "undefined-key" ]]; then
@@ -525,7 +572,7 @@ function filter-select() {
             fi
 
             if [[ $key_code_widget == "undefined-key" ]]; then
-                echo "keycode undefined: $key_code" >> /tmp/zaw.log
+                # echo "keycode undefined: $key_code" >> /tmp/zaw.log
             fi
 
             # key_code=$(echo $key_code  | od -c)
